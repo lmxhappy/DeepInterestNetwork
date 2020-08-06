@@ -1,0 +1,7 @@
+.idea
+din/.ipynb_checkpoints
+din/__pycache__
+din/save_path
+*.pyc
+din/*.pyc
+raw_data/*

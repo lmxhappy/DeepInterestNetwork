@@ -66,8 +66,6 @@ python build_dataset.py
 We put a processed data 'dataset.pkl' in DeepInterestNetwork/din. Considering the GitHub's file size limit of 100.00 MB, we split it into 3 file aa ab ac.
 
 cat aa ab ac > dataset.pkl
-
-
 ```
 * Step 3: Start training and evaluating using default arguments in background mode. 
 ```

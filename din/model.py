@@ -5,161 +5,230 @@ from Dice import dice
 class Model(object):
 
   def __init__(self, user_count, item_count, cate_count, cate_list, predict_batch_size, predict_ads_num):
+        # 1 变量
+        # 一个只占一列（一个特征）
+        self.u = tf.placeholder(tf.int32, [None,]) # [B] #reviewerID,
+        self.i = tf.placeholder(tf.int32, [None,]) # [B] # candidate item
+        self.j = tf.placeholder(tf.int32, [None,]) # [B] #这个占位符只在验证和测试的时候用到
+        self.y = tf.placeholder(tf.float32, [None,]) # [B] #label
+        self.hist_i = tf.placeholder(tf.int32, [None, None]) # [B, T] 历史item序列
+        self.sl = tf.placeholder(tf.int32, [None,]) # [B] 序列长度
+        self.lr = tf.placeholder(tf.float64, []) #学习率
 
-    self.u = tf.placeholder(tf.int32, [None,]) # [B]
-    self.i = tf.placeholder(tf.int32, [None,]) # [B]
-    self.j = tf.placeholder(tf.int32, [None,]) # [B]
-    self.y = tf.placeholder(tf.float32, [None,]) # [B]
-    self.hist_i = tf.placeholder(tf.int32, [None, None]) # [B, T]
-    self.sl = tf.placeholder(tf.int32, [None,]) # [B]
-    self.lr = tf.placeholder(tf.float64, [])
+        hidden_units = 128
 
-    hidden_units = 128
+        user_emb_w = tf.get_variable("user_emb_w", [user_count, hidden_units])
+        item_emb_w = tf.get_variable("item_emb_w", [item_count, hidden_units // 2])
 
-    user_emb_w = tf.get_variable("user_emb_w", [user_count, hidden_units])
-    item_emb_w = tf.get_variable("item_emb_w", [item_count, hidden_units // 2])
-    item_b = tf.get_variable("item_b", [item_count],
-                             initializer=tf.constant_initializer(0.0))
-    cate_emb_w = tf.get_variable("cate_emb_w", [cate_count, hidden_units // 2])
-    cate_list = tf.convert_to_tensor(cate_list, dtype=tf.int64)
+        # bias, 给每一个产品（item）分配了一个bias参数
+        item_b = tf.get_variable("item_b", [item_count],
+                                 initializer=tf.constant_initializer(0.0))
+        # item与category的shape相同
+        cate_emb_w = tf.get_variable("cate_emb_w", [cate_count, hidden_units // 2])
 
-    ic = tf.gather(cate_list, self.i)
-    i_emb = tf.concat(values = [
-        tf.nn.embedding_lookup(item_emb_w, self.i),
-        tf.nn.embedding_lookup(cate_emb_w, ic),
-        ], axis=1)
-    i_b = tf.gather(item_b, self.i)
+        # 2 candidate item的相关处理
+        # cate_list : 63001个元素的一维数组。是一个index是asin，value是category
+        # index 0 也是有asin对应的
+        cate_list = tf.convert_to_tensor(cate_list, dtype=tf.int64)
 
-    jc = tf.gather(cate_list, self.j)
-    j_emb = tf.concat([
-        tf.nn.embedding_lookup(item_emb_w, self.j),
-        tf.nn.embedding_lookup(cate_emb_w, jc),
-        ], axis=1)
-    j_b = tf.gather(item_b, self.j)
+        # ic: 获取出来asin对应的category，shape是（batch_size，），即一维数组
+        ic = tf.gather(cate_list, self.i) #item category
 
-    hc = tf.gather(cate_list, self.hist_i)
-    h_emb = tf.concat([
-        tf.nn.embedding_lookup(item_emb_w, self.hist_i),
-        tf.nn.embedding_lookup(cate_emb_w, hc),
-        ], axis=2)
+        # i_emb的shape是（batch_size，128）。前64列是item的，后64列是item category的
+        i_emb = tf.concat(values = [
+            tf.nn.embedding_lookup(item_emb_w, self.i), # item
+            tf.nn.embedding_lookup(cate_emb_w, ic), # category
+            ], axis=1)
 
-    hist_i =attention(i_emb, h_emb, self.sl)
-    #-- attention end ---
-    
-    hist_i = tf.layers.batch_normalization(inputs = hist_i)
-    hist_i = tf.reshape(hist_i, [-1, hidden_units], name='hist_bn')
-    hist_i = tf.layers.dense(hist_i, hidden_units, name='hist_fcn')
+        # 是一个一维数组，shape是(batch_size,)，即一个样本一个bias值
+        i_b = tf.gather(item_b, self.i)
 
-    u_emb_i = hist_i
-    
-    hist_j =attention(j_emb, h_emb, self.sl)
-    #-- attention end ---
-    
-    # hist_j = tf.layers.batch_normalization(inputs = hist_j)
-    hist_j = tf.layers.batch_normalization(inputs = hist_j, reuse=True)
-    hist_j = tf.reshape(hist_j, [-1, hidden_units], name='hist_bn')
-    hist_j = tf.layers.dense(hist_j, hidden_units, name='hist_fcn', reuse=True)
+        #########################只在验证、测试的时候用到#################################
+        # jc: 历史上的goods seq？？？？ shape:batch_size,一维数组
+        jc = tf.gather(cate_list, self.j)
+        print('jc shape', jc.get_shape().as_list())
+        print('self.j shape', self.j.get_shape().as_list())
+        j_emb = tf.concat([
+            tf.nn.embedding_lookup(item_emb_w, self.j), # 是一维数组, shape: batch_size
+            tf.nn.embedding_lookup(cate_emb_w, jc), #
+            ], axis=1)
+        print('j_emb shape', j_emb.get_shape().as_list())
 
-    u_emb_j = hist_j
-    print u_emb_i.get_shape().as_list()
-    print u_emb_j.get_shape().as_list()
-    print i_emb.get_shape().as_list()
-    print j_emb.get_shape().as_list()
-    #-- fcn begin -------
-    din_i = tf.concat([u_emb_i, i_emb, u_emb_i * i_emb], axis=-1)
-    din_i = tf.layers.batch_normalization(inputs=din_i, name='b1')
-    d_layer_1_i = tf.layers.dense(din_i, 80, activation=tf.nn.sigmoid, name='f1')
-    #if u want try dice change sigmoid to None and add dice layer like following two lines. You can also find model_dice.py in this folder.
-    # d_layer_1_i = tf.layers.dense(din_i, 80, activation=None, name='f1')
-    # d_layer_1_i = dice(d_layer_1_i, name='dice_1_i')
-    d_layer_2_i = tf.layers.dense(d_layer_1_i, 40, activation=tf.nn.sigmoid, name='f2')
-    # d_layer_2_i = tf.layers.dense(d_layer_1_i, 40, activation=None, name='f2')
-    # d_layer_2_i = dice(d_layer_2_i, name='dice_2_i')
-    d_layer_3_i = tf.layers.dense(d_layer_2_i, 1, activation=None, name='f3')
-    din_j = tf.concat([u_emb_j, j_emb, u_emb_j * j_emb], axis=-1)
-    din_j = tf.layers.batch_normalization(inputs=din_j, name='b1', reuse=True)
-    d_layer_1_j = tf.layers.dense(din_j, 80, activation=tf.nn.sigmoid, name='f1', reuse=True)
-    # d_layer_1_j = tf.layers.dense(din_j, 80, activation=None, name='f1', reuse=True)
-    # d_layer_1_j = dice(d_layer_1_j, name='dice_1_j')
-    d_layer_2_j = tf.layers.dense(d_layer_1_j, 40, activation=tf.nn.sigmoid, name='f2', reuse=True)
-    # d_layer_2_j = tf.layers.dense(d_layer_1_j, 40, activation=None, name='f2', reuse=True)
-    # d_layer_2_j = dice(d_layer_2_j, name='dice_2_j')
-    d_layer_3_j = tf.layers.dense(d_layer_2_j, 1, activation=None, name='f3', reuse=True)
-    d_layer_3_i = tf.reshape(d_layer_3_i, [-1])
-    d_layer_3_j = tf.reshape(d_layer_3_j, [-1])
-    x = i_b - j_b + d_layer_3_i - d_layer_3_j # [B]
-    self.logits = i_b + d_layer_3_i
-    
-    # prediciton for selected items
-    # logits for selected item:
-    item_emb_all = tf.concat([
-        item_emb_w,
-        tf.nn.embedding_lookup(cate_emb_w, cate_list)
-        ], axis=1)
-    item_emb_sub = item_emb_all[:predict_ads_num,:]
-    item_emb_sub = tf.expand_dims(item_emb_sub, 0)
-    item_emb_sub = tf.tile(item_emb_sub, [predict_batch_size, 1, 1])
-    hist_sub =attention_multi_items(item_emb_sub, h_emb, self.sl)
-    #-- attention end ---
-    
-    hist_sub = tf.layers.batch_normalization(inputs = hist_sub, name='hist_bn', reuse=tf.AUTO_REUSE)
-    # print hist_sub.get_shape().as_list() 
-    hist_sub = tf.reshape(hist_sub, [-1, hidden_units])
-    hist_sub = tf.layers.dense(hist_sub, hidden_units, name='hist_fcn', reuse=tf.AUTO_REUSE)
+        j_b = tf.gather(item_b, self.j)
+        print('j_b shape', j_b.get_shape().as_list())
+        #########################只在验证、测试的时候用到#################################
 
-    u_emb_sub = hist_sub
-    item_emb_sub = tf.reshape(item_emb_sub, [-1, hidden_units])
-    din_sub = tf.concat([u_emb_sub, item_emb_sub, u_emb_sub * item_emb_sub], axis=-1)
-    din_sub = tf.layers.batch_normalization(inputs=din_sub, name='b1', reuse=True)
-    d_layer_1_sub = tf.layers.dense(din_sub, 80, activation=tf.nn.sigmoid, name='f1', reuse=True)
-    #d_layer_1_sub = dice(d_layer_1_sub, name='dice_1_sub')
-    d_layer_2_sub = tf.layers.dense(d_layer_1_sub, 40, activation=tf.nn.sigmoid, name='f2', reuse=True)
-    #d_layer_2_sub = dice(d_layer_2_sub, name='dice_2_sub')
-    d_layer_3_sub = tf.layers.dense(d_layer_2_sub, 1, activation=None, name='f3', reuse=True)
-    d_layer_3_sub = tf.reshape(d_layer_3_sub, [-1, predict_ads_num])
-    self.logits_sub = tf.sigmoid(item_b[:predict_ads_num] + d_layer_3_sub)
-    self.logits_sub = tf.reshape(self.logits_sub, [-1, predict_ads_num, 1])
-    #-- fcn end -------
+        # 4 行为序列的处理
 
-    
-    self.mf_auc = tf.reduce_mean(tf.to_float(x > 0))
-    self.score_i = tf.sigmoid(i_b + d_layer_3_i)
-    self.score_j = tf.sigmoid(j_b + d_layer_3_j)
-    self.score_i = tf.reshape(self.score_i, [-1, 1])
-    self.score_j = tf.reshape(self.score_j, [-1, 1])
-    self.p_and_n = tf.concat([self.score_i, self.score_j], axis=-1)
-    print self.p_and_n.get_shape().as_list()
+        # hc的shape跟self.hist_i的shape是一样的，即（32，44）????对应hist_i是0的地方，那么就是category里index是0的category，这其实是一个错误
+        # 大量0填充，0也会从cate_list查出来相应的cate吗？？？
+        hc = tf.gather(cate_list, self.hist_i)
+        print('hc shape', hc.get_shape().as_list())
+
+        # 既然hc的shape与self.hist_i的shape是一样的，那么下面的两行结果也是一样的
+        tmp1 = tf.nn.embedding_lookup(item_emb_w, self.hist_i)
+        tmp2 = tf.nn.embedding_lookup(cate_emb_w, hc)
+        # h_emb的shape：（batch_size，序列长度，128），最后一维，前64是关于item的，后64是关于item category的
+        h_emb = tf.concat([
+            tmp1,
+            tmp2,
+            ], axis=2)
+
+        # 5 attention layer
+        # 5.1 训练时候用到的
+        # hist_i：[B, 1, H]
+        hist_i = attention(i_emb, h_emb, self.sl)
+        #-- attention end ---
+
+        # batch norm。仍然是[B, 1, H]
+        hist_i = tf.layers.batch_normalization(inputs = hist_i)
+
+        # hist_i的shape是[B, H]
+        hist_i = tf.reshape(hist_i, [-1, hidden_units], name='hist_bn')
+        print('hist_i shape', hist_i.get_shape().as_list())
+
+        # 维数保持不变
+        hist_i = tf.layers.dense(hist_i, hidden_units, name='hist_fcn')
+        print('line 88: hist_i shape', hist_i.get_shape().as_list())
+
+        # 到此，用户侧的embed完成
+        # shape:[B, H]
+        u_emb_i = hist_i
+
+        # 5.2 验证和测试时候用到的
+        hist_j = attention(j_emb, h_emb, self.sl)
+        #-- attention end ---
+
+        # hist_j = tf.layers.batch_normalization(inputs = hist_j)
+        hist_j = tf.layers.batch_normalization(inputs = hist_j, reuse=True)
+        hist_j = tf.reshape(hist_j, [-1, hidden_units], name='hist_bn')
+        hist_j = tf.layers.dense(hist_j, hidden_units, name='hist_fcn', reuse=True)
+
+        # 到此，验证、测试阶段的用户侧的embed完成。为什么要分开来处理呢？？？
+        u_emb_j = hist_j
+
+        print( u_emb_i.get_shape().as_list())
+        print(u_emb_j.get_shape().as_list())
+        print(i_emb.get_shape().as_list())
+        print(j_emb.get_shape().as_list())
+
+        # 6 dnn
+        # 6.1 训练阶段的dnn
+        #-- fcn begin -------
+        # paper里有user profile， context feautre，但是demo数据集里没有这个，所以就没有concat其它的embed
+        # shape：128 + 128 + 128=384
+        din_i = tf.concat([u_emb_i, i_emb, u_emb_i * i_emb], axis=-1)
+        print('line 119: din_i shape', din_i.get_shape().as_list())
+
+        din_i = tf.layers.batch_normalization(inputs=din_i, name='b1')
+        # 降维
+        d_layer_1_i = tf.layers.dense(din_i, 80, activation=tf.nn.sigmoid, name='f1')
+        #if u want try dice change sigmoid to None and add dice layer like following two lines. You can also find model_dice.py in this folder.
+        # d_layer_1_i = tf.layers.dense(din_i, 80, activation=None, name='f1')
+        # d_layer_1_i = dice(d_layer_1_i, name='dice_1_i')
+
+        # 降维，到40
+        d_layer_2_i = tf.layers.dense(d_layer_1_i, 40, activation=tf.nn.sigmoid, name='f2')
+        # d_layer_2_i = tf.layers.dense(d_layer_1_i, 40, activation=None, name='f2')
+        # d_layer_2_i = dice(d_layer_2_i, name='dice_2_i')
+
+        print('line 133: d_layer_2_i shape', d_layer_2_i.get_shape().as_list())
+
+        # 最终降维到1
+        d_layer_3_i = tf.layers.dense(d_layer_2_i, 1, activation=None, name='f3')
+
+        # 6.2 测试阶段的dnn
+        din_j = tf.concat([u_emb_j, j_emb, u_emb_j * j_emb], axis=-1)
+        din_j = tf.layers.batch_normalization(inputs=din_j, name='b1', reuse=True)
+        d_layer_1_j = tf.layers.dense(din_j, 80, activation=tf.nn.sigmoid, name='f1', reuse=True)
+        # d_layer_1_j = tf.layers.dense(din_j, 80, activation=None, name='f1', reuse=True)
+        # d_layer_1_j = dice(d_layer_1_j, name='dice_1_j')
+        d_layer_2_j = tf.layers.dense(d_layer_1_j, 40, activation=tf.nn.sigmoid, name='f2', reuse=True)
+        # d_layer_2_j = tf.layers.dense(d_layer_1_j, 40, activation=None, name='f2', reuse=True)
+        # d_layer_2_j = dice(d_layer_2_j, name='dice_2_j')
+        d_layer_3_j = tf.layers.dense(d_layer_2_j, 1, activation=None, name='f3', reuse=True)
+        d_layer_3_i = tf.reshape(d_layer_3_i, [-1])
+        d_layer_3_j = tf.reshape(d_layer_3_j, [-1])
+        x = i_b - j_b + d_layer_3_i - d_layer_3_j # [B]
+
+        # 7
+        self.logits = i_b + d_layer_3_i
+
+        # prediciton for selected items
+        # logits for selected item:
+
+        # 将全量的item和category的embed vector concat到一起。这是要干嘛？？？
+        item_emb_all = tf.concat([
+            item_emb_w,
+            tf.nn.embedding_lookup(cate_emb_w, cate_list) # item找到对应的category的embed
+            ], axis=1)
+        item_emb_sub = item_emb_all[:predict_ads_num,:]
+        item_emb_sub = tf.expand_dims(item_emb_sub, 0)
+        item_emb_sub = tf.tile(item_emb_sub, [predict_batch_size, 1, 1])
+        hist_sub =attention_multi_items(item_emb_sub, h_emb, self.sl)
+        #-- attention end ---
+
+        hist_sub = tf.layers.batch_normalization(inputs = hist_sub, name='hist_bn', reuse=tf.AUTO_REUSE)
+        # print hist_sub.get_shape().as_list()
+        hist_sub = tf.reshape(hist_sub, [-1, hidden_units])
+        hist_sub = tf.layers.dense(hist_sub, hidden_units, name='hist_fcn', reuse=tf.AUTO_REUSE)
+
+        u_emb_sub = hist_sub
+        item_emb_sub = tf.reshape(item_emb_sub, [-1, hidden_units])
+        din_sub = tf.concat([u_emb_sub, item_emb_sub, u_emb_sub * item_emb_sub], axis=-1)
+        din_sub = tf.layers.batch_normalization(inputs=din_sub, name='b1', reuse=True)
+        d_layer_1_sub = tf.layers.dense(din_sub, 80, activation=tf.nn.sigmoid, name='f1', reuse=True)
+        #d_layer_1_sub = dice(d_layer_1_sub, name='dice_1_sub')
+        d_layer_2_sub = tf.layers.dense(d_layer_1_sub, 40, activation=tf.nn.sigmoid, name='f2', reuse=True)
+        #d_layer_2_sub = dice(d_layer_2_sub, name='dice_2_sub')
+        d_layer_3_sub = tf.layers.dense(d_layer_2_sub, 1, activation=None, name='f3', reuse=True)
+        d_layer_3_sub = tf.reshape(d_layer_3_sub, [-1, predict_ads_num])
+        self.logits_sub = tf.sigmoid(item_b[:predict_ads_num] + d_layer_3_sub)
+        self.logits_sub = tf.reshape(self.logits_sub, [-1, predict_ads_num, 1])
+        #-- fcn end -------
 
 
-    # Step variable
-    self.global_step = tf.Variable(0, trainable=False, name='global_step')
-    self.global_epoch_step = \
-        tf.Variable(0, trainable=False, name='global_epoch_step')
-    self.global_epoch_step_op = \
-        tf.assign(self.global_epoch_step, self.global_epoch_step+1)
+        self.mf_auc = tf.reduce_mean(tf.to_float(x > 0))
+        self.score_i = tf.sigmoid(i_b + d_layer_3_i)
+        self.score_j = tf.sigmoid(j_b + d_layer_3_j)
+        self.score_i = tf.reshape(self.score_i, [-1, 1])
+        self.score_j = tf.reshape(self.score_j, [-1, 1])
+        self.p_and_n = tf.concat([self.score_i, self.score_j], axis=-1)
+        print(self.p_and_n.get_shape().as_list())
 
-    self.loss = tf.reduce_mean(
-        tf.nn.sigmoid_cross_entropy_with_logits(
-            logits=self.logits,
-            labels=self.y)
-        )
 
-    trainable_params = tf.trainable_variables()
-    self.opt = tf.train.GradientDescentOptimizer(learning_rate=self.lr)
-    gradients = tf.gradients(self.loss, trainable_params)
-    clip_gradients, _ = tf.clip_by_global_norm(gradients, 5)
-    self.train_op = self.opt.apply_gradients(
-        zip(clip_gradients, trainable_params), global_step=self.global_step)
+        # Step variable
+        self.global_step = tf.Variable(0, trainable=False, name='global_step')
+        self.global_epoch_step = \
+            tf.Variable(0, trainable=False, name='global_epoch_step')
+        self.global_epoch_step_op = \
+            tf.assign(self.global_epoch_step, self.global_epoch_step+1)
+
+        self.loss = tf.reduce_mean(
+            tf.nn.sigmoid_cross_entropy_with_logits(
+                logits=self.logits,
+                labels=self.y)
+            )
+
+        trainable_params = tf.trainable_variables()
+        self.opt = tf.train.GradientDescentOptimizer(learning_rate=self.lr)
+        gradients = tf.gradients(self.loss, trainable_params)
+        clip_gradients, _ = tf.clip_by_global_norm(gradients, 5)
+        self.train_op = self.opt.apply_gradients(
+            zip(clip_gradients, trainable_params), global_step=self.global_step)
 
 
   def train(self, sess, uij, l):
+    '''
+    @param uij: 一个元组，有4部分组成：# reviewerID, hist_asin, candidate item, label
+    '''
     loss, _ = sess.run([self.loss, self.train_op], feed_dict={
-        self.u: uij[0],
-        self.i: uij[1],
-        self.y: uij[2],
-        self.hist_i: uij[3],
-        self.sl: uij[4],
-        self.lr: l,
+        self.u: uij[0], #reviewerID,
+        self.i: uij[1], # hist_asin
+        self.y: uij[2], # label
+        self.hist_i: uij[3], #item seq
+        self.sl: uij[4], # seq length
+        self.lr: l, # learning-rate？？？
         })
     return loss
 
@@ -167,21 +236,21 @@ class Model(object):
     u_auc, socre_p_and_n = sess.run([self.mf_auc, self.p_and_n], feed_dict={
         self.u: uij[0],
         self.i: uij[1],
-        self.j: uij[2],
+        self.j: uij[2], # seq mids
         self.hist_i: uij[3],
         self.sl: uij[4],
         })
     return u_auc, socre_p_and_n
-  
+
   def test(self, sess, uij):
     return sess.run(self.logits_sub, feed_dict={
         self.u: uij[0],
         self.i: uij[1],
-        self.j: uij[2],
+        self.j: uij[2], #
         self.hist_i: uij[3],
         self.sl: uij[4],
         })
-  
+
 
   def save(self, sess, path):
     saver = tf.train.Saver()
@@ -199,32 +268,71 @@ def extract_axis_1(data, ind):
 
 def attention(queries, keys, keys_length):
   '''
-    queries:     [B, H]
+    attention and sum pooling
+
+    queries:     [B, H]。H是128
     keys:        [B, T, H]
     keys_length: [B]
+
+    B是batch_size，T是历史序列长度， H是item与其category embed vector维数之和。两个的维数是相等的。
   '''
+  # queries_hidden_units等于H
   queries_hidden_units = queries.get_shape().as_list()[-1]
+
+  # queries的shape是（B，H*T）
   queries = tf.tile(queries, [1, tf.shape(keys)[1]])
+
+  # queries变成了（B，T，H）
   queries = tf.reshape(queries, [-1, tf.shape(keys)[1], queries_hidden_units])
+
+  # 各种组合，放到一个dnn里去学。
+  # 每个元素都是一个3维数组
+  # 拼在第三维上
+  # din_all的shape是（B，T，H*4）H*4=512
   din_all = tf.concat([queries, keys, queries-keys, queries*keys], axis=-1)
+  print('j_b shape', din_all.get_shape().as_list())
+
+  # d_layer_1_all shape: (B, T, 80)
   d_layer_1_all = tf.layers.dense(din_all, 80, activation=tf.nn.sigmoid, name='f1_att', reuse=tf.AUTO_REUSE)
+  print('d_layer_1_all shape', d_layer_1_all.get_shape().as_list())
+
+  # d_layer_2_all shape: (B, T, 40)
   d_layer_2_all = tf.layers.dense(d_layer_1_all, 40, activation=tf.nn.sigmoid, name='f2_att', reuse=tf.AUTO_REUSE)
+
+  # d_layer_3_all shape: (B, T, 1)
   d_layer_3_all = tf.layers.dense(d_layer_2_all, 1, activation=None, name='f3_att', reuse=tf.AUTO_REUSE)
+
+  # d_layer_3_all shape: (B, 1, T)
   d_layer_3_all = tf.reshape(d_layer_3_all, [-1, 1, tf.shape(keys)[1]])
-  outputs = d_layer_3_all 
+
+  # 每个样本，都获得了一个"行向量"，每个元素是与每个历史item相关的weight值
+  outputs = d_layer_3_all
+
   # Mask
+  # 为每个样本生成一个向量，向量的前半部分是True，后半部分是False
   key_masks = tf.sequence_mask(keys_length, tf.shape(keys)[1])   # [B, T]
+  # reshape而已
   key_masks = tf.expand_dims(key_masks, 1) # [B, 1, T]
+
+  # paddings里面里每个值都一样，值是-4294967295，非常小的负数。为啥用非常小的负数呢？？？
+  # shape是[B, 1, T]
   paddings = tf.ones_like(outputs) * (-2 ** 32 + 1)
+
+  # key_masks, outputs, paddings等三者的shape都一样，都是[B, 1, T]
+  # 是因为前面有序列的，weight才有意义，后面没有历史item的，都不会看weight，weight也没有意义。用特别小的负值来填充
   outputs = tf.where(key_masks, outputs, paddings)  # [B, 1, T]
 
-  # Scale
+  # Scale。这样scale的意义是什么呢？？？
   outputs = outputs / (keys.get_shape().as_list()[-1] ** 0.5)
 
-  # Activation
+  # Activation。这个就是candidate item与每个history item的相关score
+  # 非常大的负值，就会趋向于0
+  # 这个计算代价特别大
   outputs = tf.nn.softmax(outputs)  # [B, 1, T]
 
   # Weighted sum
+  # outputs：（B，1，T）， key：（B，T，H），矩阵相乘是# [B, 1, H]
+  # sum pooling
   outputs = tf.matmul(outputs, keys)  # [B, 1, H]
 
   return outputs
@@ -267,5 +375,5 @@ def attention_multi_items(queries, keys, keys_length):
   # Weighted sum
   outputs = tf.matmul(outputs, keys)
   outputs = tf.reshape(outputs, [-1, queries_nums, queries_hidden_units])  # [B, N, 1, H]
-  print outputs.get_shape().as_list()
+  print(outputs.get_shape().as_list())
   return outputs
